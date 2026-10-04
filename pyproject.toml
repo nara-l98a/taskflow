@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskflow"
+version = "1.0.0"
+description = "Local-first daily project and task planning CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Taskflow contributors"}]
+
+[project.scripts]
+taskflow = "taskflow.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
