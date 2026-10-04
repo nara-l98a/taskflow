@@ -6,6 +6,7 @@ from pathlib import Path
 
 STATUSES = ("todo", "in_progress", "blocked", "done")
 PRIORITIES = ("low", "medium", "high", "urgent")
+PRIORITY_RANK = {priority: -rank for rank, priority in enumerate(PRIORITIES)}
 
 class TaskflowError(Exception):
     pass
@@ -24,7 +25,26 @@ class Store:
         if not isinstance(raw, dict) or not isinstance(raw.get("projects", {}), dict) or not isinstance(raw.get("tasks", {}), dict):
             raise TaskflowError("数据文件格式无效：projects/tasks 必须是对象")
         raw.setdefault("version", 1)
+        self._validate(raw)
         return raw
+    @staticmethod
+    def _validate(data):
+        """Reject malformed hand-edited files before commands use them."""
+        projects, tasks = data["projects"], data["tasks"]
+        for project_id, project in projects.items():
+            if not isinstance(project, dict) or project.get("id") != project_id:
+                raise TaskflowError(f"数据文件格式无效：项目 {project_id} 记录不完整")
+            if not isinstance(project.get("name"), str):
+                raise TaskflowError(f"数据文件格式无效：项目 {project_id} 名称无效")
+        for task_id, task in tasks.items():
+            if not isinstance(task, dict) or task.get("id") != task_id:
+                raise TaskflowError(f"数据文件格式无效：任务 {task_id} 记录不完整")
+            if task.get("project_id") not in projects:
+                raise TaskflowError(f"数据文件格式无效：任务 {task_id} 所属项目不存在")
+            if task.get("status") not in STATUSES or task.get("priority") not in PRIORITIES:
+                raise TaskflowError(f"数据文件格式无效：任务 {task_id} 状态或优先级无效")
+            if task.get("due") is not None:
+                parse_day(task["due"])
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=str(self.path.parent), text=True)
@@ -50,6 +70,11 @@ def parse_day(value: str) -> str:
 
 def ident(value: str, label: str):
     if not value or any(c.isspace() for c in value): raise TaskflowError(f"{label} ID 不能为空且不能含空格")
+    return value
+
+def text(value: str, label: str):
+    if not value or not value.strip():
+        raise TaskflowError(f"{label} 不能为空")
     return value
 
 def project_or_error(store, project_id):
@@ -90,6 +115,7 @@ def run(args):
     if args.command == "project":
         if args.action == "add":
             ident(args.id,"项目");
+            text(args.name, "项目名称")
             if args.id in store.data["projects"]: raise TaskflowError(f"项目已存在：{args.id}")
             store.data["projects"][args.id]={"id":args.id,"name":args.name,"description":args.description,"created_at":now()}; changed=True; print(f"已创建项目：{args.id}")
         elif args.action == "list":
@@ -99,7 +125,7 @@ def run(args):
             tasks=[t for t in store.data["tasks"].values() if t["project_id"]==args.id]; print_tasks(tasks,store)
     elif args.command == "task":
         if args.action == "add":
-            ident(args.id,"任务"); project_or_error(store,args.project)
+            ident(args.id,"任务"); project_or_error(store,args.project); text(args.title, "任务标题")
             if args.id in store.data["tasks"]: raise TaskflowError(f"任务已存在：{args.id}")
             due=parse_day(args.due) if args.due else None; stamp=now()
             store.data["tasks"][args.id]={"id":args.id,"project_id":args.project,"title":args.title,"notes":args.notes,"priority":args.priority,"due":due,"status":"todo","created_at":stamp,"updated_at":stamp}; changed=True; print(f"已创建任务：{args.id}")
@@ -108,7 +134,7 @@ def run(args):
             if args.project: project_or_error(store,args.project); tasks=[t for t in tasks if t["project_id"]==args.project]
             if args.status: tasks=[t for t in tasks if t["status"]==args.status]
             if args.priority: tasks=[t for t in tasks if t["priority"]==args.priority]
-            print_tasks(sorted(tasks,key=lambda t:(t.get("due") or "9999-99-99", t["priority"], t["id"])),store)
+            print_tasks(sorted(tasks,key=lambda t:(t.get("due") or "9999-99-99", PRIORITY_RANK[t["priority"]], t["id"])),store)
         elif args.action == "show": print(json.dumps(task_or_error(store,args.id),ensure_ascii=False,indent=2))
         else:
             t=task_or_error(store,args.id)
@@ -116,7 +142,9 @@ def run(args):
             else:
                 for key in ("title","priority","status","notes"):
                     value=getattr(args,key)
-                    if value is not None: t[key]=value
+                    if value is not None:
+                        if key == "title": text(value, "任务标题")
+                        t[key]=value
                 if args.due is not None: t["due"]=parse_day(args.due) if args.due else None
             t["updated_at"]=now(); changed=True; print(f"已更新任务：{args.id}")
     else:
@@ -127,7 +155,7 @@ def run(args):
             if args.days<1 or args.days>366: raise TaskflowError("--days 必须在 1 到 366 之间")
             start=date.fromisoformat(ref); end=start+timedelta(days=args.days-1)
             tasks=[t for t in store.data["tasks"].values() if t.get("due") and start.isoformat()<=t["due"]<=end.isoformat() and t["status"]!="done"]
-            print(f"计划区间：{start.isoformat()} 至 {end.isoformat()}"); print_tasks(sorted(tasks,key=lambda t:(t["due"],t["priority"])),store)
+            print(f"计划区间：{start.isoformat()} 至 {end.isoformat()}"); print_tasks(sorted(tasks,key=lambda t:(t["due"], PRIORITY_RANK[t["priority"]], t["id"])),store)
     if changed: store.save()
 
 def main(argv=None):

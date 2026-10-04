@@ -44,4 +44,25 @@ class TaskflowTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(TaskflowError):
                 parse_day(value)
 
+    def test_invalid_existing_data_is_rejected(self):
+        self.db.write_text(json.dumps({"projects": {}, "tasks": {
+            "orphan": {"id": "orphan", "project_id": "missing", "status": "todo", "priority": "low"}
+        }}))
+        with self.assertRaisesRegex(SystemExit, "所属项目不存在"):
+            self.call("task", "list")
+
+    def test_blank_titles_are_rejected(self):
+        with self.assertRaisesRegex(SystemExit, "项目名称"):
+            self.call("project", "add", "p", "   ")
+        self.call("project", "add", "p", "项目")
+        with self.assertRaisesRegex(SystemExit, "任务标题"):
+            self.call("task", "add", "t", "p", "")
+
+    def test_plan_orders_urgent_before_low(self):
+        self.call("project", "add", "p", "项目")
+        self.call("task", "add", "low", "p", "低", "--priority", "low", "--due", "2026-06-10")
+        self.call("task", "add", "urgent", "p", "急", "--priority", "urgent", "--due", "2026-06-10")
+        output = self.call("plan", "--on", "2026-06-10")
+        self.assertLess(output.index("urgent"), output.index("low"))
+
 if __name__ == "__main__": unittest.main()
